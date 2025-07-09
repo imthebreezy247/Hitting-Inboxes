@@ -1,0 +1,150 @@
+{
+  "accounts": [
+    {
+      "email": "seedtest1@gmail.com",
+      "password": "app_specific_password_1",
+      "provider": "gmail",
+      "imap_server": "imap.gmail.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest2@gmail.com",
+      "password": "app_specific_password_2",
+      "provider": "gmail",
+      "imap_server": "imap.gmail.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest3@gmail.com",
+      "password": "app_specific_password_3",
+      "provider": "gmail",
+      "imap_server": "imap.gmail.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest1@outlook.com",
+      "password": "password_1",
+      "provider": "outlook",
+      "imap_server": "outlook.office365.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest2@hotmail.com",
+      "password": "password_2",
+      "provider": "outlook",
+      "imap_server": "outlook.office365.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest3@live.com",
+      "password": "password_3",
+      "provider": "outlook",
+      "imap_server": "outlook.office365.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest1@yahoo.com",
+      "password": "app_password_1",
+      "provider": "yahoo",
+      "imap_server": "imap.mail.yahoo.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest2@yahoo.com",
+      "password": "app_password_2",
+      "provider": "yahoo",
+      "imap_server": "imap.mail.yahoo.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest1@aol.com",
+      "password": "password_1",
+      "provider": "aol",
+      "imap_server": "imap.aol.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest1@icloud.com",
+      "password": "app_password_1",
+      "provider": "apple",
+      "imap_server": "imap.mail.me.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest2@me.com",
+      "password": "app_password_2",
+      "provider": "apple",
+      "imap_server": "imap.mail.me.com",
+      "imap_port": 993
+    },
+    {
+      "email": "test@company1.com",
+      "password": "password_1",
+      "provider": "corporate",
+      "imap_server": "mail.company1.com",
+      "imap_port": 993
+    },
+    {
+      "email": "test@company2.com",
+      "password": "password_2",
+      "provider": "corporate",
+      "imap_server": "mail.company2.com",
+      "imap_port": 993
+    },
+    {
+      "email": "test@company3.com",
+      "password": "password_3",
+      "provider": "corporate",
+      "imap_server": "mail.company3.com",
+      "imap_port": 993
+    },
+    {
+      "email": "seedtest1@protonmail.com",
+      "password": "password_1",
+      "provider": "protonmail",
+      "imap_server": "127.0.0.1",
+      "imap_port": 1143
+    }
+  ],
+  "setup_instructions": {
+    "gmail": [
+      "1. Enable 2-factor authentication",
+      "2. Generate app-specific passwords",
+      "3. Enable IMAP in settings",
+      "4. Use app passwords, not regular passwords"
+    ],
+    "outlook": [
+      "1. Enable IMAP in Outlook settings",
+      "2. Use regular account password",
+      "3. May need to enable 'less secure apps' for older accounts"
+    ],
+    "yahoo": [
+      "1. Enable 2-factor authentication",
+      "2. Generate app passwords",
+      "3. Enable IMAP access",
+      "4. Use app passwords for authentication"
+    ],
+    "apple": [
+      "1. Enable 2-factor authentication",
+      "2. Generate app-specific passwords",
+      "3. Use app passwords for IMAP access"
+    ],
+    "corporate": [
+      "1. Contact IT department for IMAP settings",
+      "2. Ensure test accounts have IMAP access",
+      "3. Configure proper server settings"
+    ]
+  },
+  "monitoring_schedule": {
+    "pre_campaign": "Test before every campaign send",
+    "continuous": "Daily monitoring tests",
+    "alert_threshold": "Alert if inbox rate drops below 80%"
+  },
+  "security_notes": [
+    "Use dedicated test accounts only",
+    "Store passwords securely (environment variables)",
+    "Rotate passwords regularly",
+    "Monitor for unauthorized access",
+    "Use app-specific passwords where available"
+  ]
+}
