@@ -1,6 +1,17 @@
 # requirements.txt
+# Core dependencies
 sendgrid==6.11.0
 flask==3.0.0
 pandas==2.1.4
 email-validator==2.1.0
 python-dotenv==1.0.0
+
+# New dependencies for Phase 1
+boto3==1.34.0  # Amazon SES
+requests==2.31.0  # Postmark API
+dnspython==2.4.2  # DNS checking
+dataclasses==0.6  # For Python < 3.7 compatibility (remove if using Python 3.7+)
+
+# Database and utilities
+sqlite3  # Built-in with Python
+typing-extensions==4.8.0  # For enhanced typing support
