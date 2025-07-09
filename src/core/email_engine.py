@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timedelta
 import json
 import time
+import traceback
 from sqlalchemy.orm import Session
 from .provider_manager import ProviderManager
 from .warming_system import IPWarmingSchedule
@@ -336,9 +337,9 @@ class EmailDeliveryEngine:
     async def _send_via_sendgrid(self, client, to_email: str, subject: str,
                                html_content: str, text_content: str,
                                from_name: str, from_email: str) -> Tuple[bool, str]:
-        """Send via SendGrid"""
+        """Send via SendGrid with comprehensive error handling"""
         try:
-            from sendgrid.helpers.mail import Mail, Email, To, Content
+            from sendgrid.helpers.mail import Mail, Email, To, Content, TrackingSettings, ClickTracking, OpenTracking
 
             message = Mail(
                 from_email=Email(from_email, from_name),
@@ -351,58 +352,150 @@ class EmailDeliveryEngine:
             # Add tracking and deliverability headers
             message.add_header('List-Unsubscribe', '<mailto:unsubscribe@cjsinsurancesolutions.com>')
             message.add_header('List-Unsubscribe-Post', 'List-Unsubscribe=One-Click')
+            message.add_header('X-Mailer', 'CJS Insurance Email System v2.0')
+            message.add_header('X-Priority', '3')
+
+            # Enable tracking
+            tracking_settings = TrackingSettings()
+            tracking_settings.click_tracking = ClickTracking(True, True)
+            tracking_settings.open_tracking = OpenTracking(True)
+            message.tracking_settings = tracking_settings
+
+            # Add custom args for tracking
+            message.custom_arg = {
+                'campaign_type': 'broadcast',
+                'system_version': '2.0'
+            }
 
             response = client.send(message)
 
             if response.status_code == 202:
-                return True, "SendGrid: Email queued successfully"
+                # Extract message ID from response headers if available
+                message_id = response.headers.get('X-Message-Id', f"sg_{int(time.time())}")
+                return True, message_id
             else:
-                return False, f"SendGrid error: Status {response.status_code}"
+                error_body = getattr(response, 'body', 'Unknown error')
+                return False, f"SendGrid error: Status {response.status_code}, Body: {error_body}"
 
         except Exception as e:
+            # Log detailed error for debugging
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"SendGrid error details: {error_details}")
             return False, f"SendGrid error: {str(e)}"
 
     async def _send_via_ses(self, client, to_email: str, subject: str,
                           html_content: str, text_content: str,
                           from_name: str, from_email: str) -> Tuple[bool, str]:
-        """Send via Amazon SES"""
+        """Send via Amazon SES with comprehensive error handling"""
         try:
-            response = client.send_email(
-                Source=f"{from_name} <{from_email}>",
-                Destination={'ToAddresses': [to_email]},
-                Message={
-                    'Subject': {'Data': subject, 'Charset': 'UTF-8'},
-                    'Body': {
-                        'Html': {'Data': html_content, 'Charset': 'UTF-8'},
-                        'Text': {'Data': text_content, 'Charset': 'UTF-8'}
-                    }
-                }
+            # Prepare email headers for better deliverability
+            headers = {
+                'List-Unsubscribe': '<mailto:unsubscribe@cjsinsurancesolutions.com>',
+                'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+                'X-Mailer': 'CJS Insurance Email System v2.0',
+                'X-Priority': '3',
+                'X-SES-CONFIGURATION-SET': 'default'  # Use configuration set if available
+            }
+
+            # Build raw email message for better control
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = f"{from_name} <{from_email}>"
+            msg['To'] = to_email
+
+            # Add headers
+            for header, value in headers.items():
+                msg[header] = value
+
+            # Add text and HTML parts
+            text_part = MIMEText(text_content, 'plain', 'utf-8')
+            html_part = MIMEText(html_content, 'html', 'utf-8')
+
+            msg.attach(text_part)
+            msg.attach(html_part)
+
+            # Send via SES
+            response = client.send_raw_email(
+                Source=from_email,
+                Destinations=[to_email],
+                RawMessage={'Data': msg.as_string()}
             )
 
             message_id = response.get('MessageId')
             return True, message_id
 
+        except client.exceptions.MessageRejected as e:
+            return False, f"SES message rejected: {str(e)}"
+        except client.exceptions.MailFromDomainNotVerifiedException as e:
+            return False, f"SES domain not verified: {str(e)}"
+        except client.exceptions.ConfigurationSetDoesNotExistException as e:
+            return False, f"SES configuration set error: {str(e)}"
         except Exception as e:
-            return False, f"SES error: {str(e)}"
+            # Handle other SES errors
+            error_code = getattr(e, 'response', {}).get('Error', {}).get('Code', 'Unknown')
+            error_message = getattr(e, 'response', {}).get('Error', {}).get('Message', str(e))
+            return False, f"SES error [{error_code}]: {error_message}"
 
     async def _send_via_postmark(self, client, to_email: str, subject: str,
                                html_content: str, text_content: str,
                                from_name: str, from_email: str) -> Tuple[bool, str]:
-        """Send via Postmark"""
+        """Send via Postmark with comprehensive tracking and error handling"""
         try:
+            # Prepare headers for better deliverability
+            headers = {
+                'List-Unsubscribe': '<mailto:unsubscribe@cjsinsurancesolutions.com>',
+                'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+                'X-Mailer': 'CJS Insurance Email System v2.0',
+                'X-Priority': '3'
+            }
+
+            # Prepare tracking options
+            tracking_options = {
+                'TrackOpens': True,
+                'TrackLinks': 'HtmlAndText'
+            }
+
+            # Send email with all options
             response = client.emails.send(
                 From=f"{from_name} <{from_email}>",
                 To=to_email,
                 Subject=subject,
                 HtmlBody=html_content,
                 TextBody=text_content,
-                MessageStream='broadcast'
+                MessageStream='broadcast',
+                Headers=headers,
+                **tracking_options,
+                Metadata={
+                    'system': 'cjs-email-v2',
+                    'campaign_type': 'broadcast'
+                }
             )
 
-            return True, response.get('MessageID', 'Postmark: Sent')
+            message_id = response.get('MessageID')
+            if message_id:
+                return True, message_id
+            else:
+                return False, "Postmark: No message ID returned"
 
         except Exception as e:
-            return False, f"Postmark error: {str(e)}"
+            # Handle Postmark-specific errors
+            error_message = str(e)
+
+            # Parse common Postmark errors
+            if 'inactive recipient' in error_message.lower():
+                return False, "Postmark: Inactive recipient (suppressed)"
+            elif 'invalid email address' in error_message.lower():
+                return False, "Postmark: Invalid email address format"
+            elif 'rate limit' in error_message.lower():
+                return False, "Postmark: Rate limit exceeded"
+            elif 'insufficient credits' in error_message.lower():
+                return False, "Postmark: Insufficient credits"
+            else:
+                return False, f"Postmark error: {error_message}"
 
     def _check_rate_limits(self, batch_size: int, limits: Dict) -> bool:
         """Check if we can send batch without exceeding rate limits"""

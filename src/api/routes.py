@@ -224,11 +224,129 @@ async def get_campaign_stats(campaign_id: int, db=Depends(get_db_session)):
     """Get campaign engagement statistics"""
     tracker = EngagementTracker(db)
     stats = tracker.get_campaign_engagement_stats(campaign_id)
-    
+
     if stats:
         return stats
     else:
         raise HTTPException(status_code=404, detail="Campaign not found or no stats available")
+
+@app.get("/campaigns/")
+async def list_campaigns(skip: int = 0, limit: int = 50, status: Optional[str] = None,
+                        db=Depends(get_db_session)):
+    """List campaigns with optional filtering"""
+    from ..database.models import Campaign
+
+    query = db.query(Campaign)
+
+    if status:
+        query = query.filter(Campaign.status == status)
+
+    campaigns = query.order_by(Campaign.created_at.desc()).offset(skip).limit(limit).all()
+
+    return {
+        "campaigns": [
+            {
+                "id": c.id,
+                "name": c.name,
+                "subject": c.subject,
+                "status": c.status,
+                "total_recipients": c.total_recipients,
+                "sent_count": c.sent_count,
+                "delivery_rate": c.delivery_rate,
+                "open_rate": c.open_rate,
+                "click_rate": c.click_rate,
+                "created_at": c.created_at,
+                "sent_time": c.sent_time
+            }
+            for c in campaigns
+        ],
+        "total": len(campaigns)
+    }
+
+@app.get("/campaigns/{campaign_id}")
+async def get_campaign(campaign_id: int, db=Depends(get_db_session)):
+    """Get campaign details"""
+    from ..database.models import Campaign
+
+    campaign = db.query(Campaign).filter_by(id=campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    return {
+        "id": campaign.id,
+        "name": campaign.name,
+        "subject": campaign.subject,
+        "from_name": campaign.from_name,
+        "from_email": campaign.from_email,
+        "html_content": campaign.html_content,
+        "text_content": campaign.text_content,
+        "status": campaign.status,
+        "total_recipients": campaign.total_recipients,
+        "sent_count": campaign.sent_count,
+        "delivered_count": campaign.delivered_count,
+        "open_count": campaign.open_count,
+        "click_count": campaign.click_count,
+        "bounce_count": campaign.bounce_count,
+        "complaint_count": campaign.complaint_count,
+        "delivery_rate": campaign.delivery_rate,
+        "open_rate": campaign.open_rate,
+        "click_rate": campaign.click_rate,
+        "bounce_rate": campaign.bounce_rate,
+        "segment_rules": campaign.segment_rules,
+        "created_at": campaign.created_at,
+        "sent_time": campaign.sent_time,
+        "scheduled_time": campaign.scheduled_time
+    }
+
+@app.put("/campaigns/{campaign_id}")
+async def update_campaign(campaign_id: int, updates: Dict, db=Depends(get_db_session)):
+    """Update campaign details"""
+    from ..database.models import Campaign
+
+    campaign = db.query(Campaign).filter_by(id=campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Only allow updates if campaign is in draft status
+    if campaign.status != 'draft':
+        raise HTTPException(status_code=400, detail="Can only update draft campaigns")
+
+    # Update allowed fields
+    allowed_fields = ['name', 'subject', 'html_content', 'text_content', 'segment_rules', 'scheduled_time']
+
+    for field, value in updates.items():
+        if field in allowed_fields and hasattr(campaign, field):
+            setattr(campaign, field, value)
+
+    campaign.updated_at = datetime.utcnow()
+
+    try:
+        db.commit()
+        return {"success": True, "message": "Campaign updated successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
+@app.delete("/campaigns/{campaign_id}")
+async def delete_campaign(campaign_id: int, db=Depends(get_db_session)):
+    """Delete campaign (only if draft)"""
+    from ..database.models import Campaign
+
+    campaign = db.query(Campaign).filter_by(id=campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Only allow deletion if campaign is in draft status
+    if campaign.status != 'draft':
+        raise HTTPException(status_code=400, detail="Can only delete draft campaigns")
+
+    try:
+        db.delete(campaign)
+        db.commit()
+        return {"success": True, "message": "Campaign deleted successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Deletion failed: {str(e)}")
 
 # Engagement Tracking Endpoints
 @app.post("/engagement/track")
@@ -320,6 +438,217 @@ async def get_warming_status(provider: str = 'sendgrid', db=Depends(get_db_sessi
     warming_schedule = IPWarmingSchedule()
     status = warming_schedule.get_warming_status(db, provider)
     return status
+
+@app.get("/system/health")
+async def get_system_health(db=Depends(get_db_session)):
+    """Comprehensive system health check"""
+    try:
+        health_data = {
+            "status": "healthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "checks": {}
+        }
+
+        # Database health
+        try:
+            db.execute("SELECT 1")
+            health_data["checks"]["database"] = {"status": "healthy", "response_time_ms": 0}
+        except Exception as e:
+            health_data["checks"]["database"] = {"status": "unhealthy", "error": str(e)}
+            health_data["status"] = "degraded"
+
+        # Provider health
+        provider_manager = ProviderManager(db_session=db)
+        provider_stats = provider_manager.get_provider_stats()
+
+        healthy_providers = sum(1 for p in provider_stats.values() if p.get('can_send', False))
+        total_providers = len(provider_stats)
+
+        health_data["checks"]["providers"] = {
+            "status": "healthy" if healthy_providers > 0 else "unhealthy",
+            "healthy_count": healthy_providers,
+            "total_count": total_providers,
+            "details": provider_stats
+        }
+
+        if healthy_providers == 0:
+            health_data["status"] = "unhealthy"
+
+        # Recent performance
+        from ..utils.analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db)
+        trends = analytics.get_engagement_trends(1)  # Last 24 hours
+
+        if trends.get('daily_trends'):
+            latest_day = trends['daily_trends'][-1] if trends['daily_trends'] else {}
+            delivery_rate = latest_day.get('delivery_rate', 0)
+            bounce_rate = latest_day.get('bounce_rate', 0)
+
+            performance_status = "healthy"
+            if delivery_rate < 90:
+                performance_status = "degraded"
+            if delivery_rate < 80 or bounce_rate > 10:
+                performance_status = "unhealthy"
+                health_data["status"] = "unhealthy"
+
+            health_data["checks"]["performance"] = {
+                "status": performance_status,
+                "delivery_rate": delivery_rate,
+                "bounce_rate": bounce_rate
+            }
+
+        # Calculate overall health score
+        check_scores = {
+            "healthy": 100,
+            "degraded": 50,
+            "unhealthy": 0
+        }
+
+        total_score = sum(check_scores.get(check.get("status", "unhealthy"), 0)
+                         for check in health_data["checks"].values())
+        max_score = len(health_data["checks"]) * 100
+        health_data["health_score"] = (total_score / max_score * 100) if max_score > 0 else 0
+
+        return health_data
+
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": str(e),
+            "health_score": 0
+        }
+
+@app.get("/system/metrics")
+async def get_system_metrics(days: int = 7, db=Depends(get_db_session)):
+    """Get system performance metrics"""
+    try:
+        from ..utils.analytics import AnalyticsEngine
+
+        analytics = AnalyticsEngine(db)
+
+        # Get engagement trends
+        trends = analytics.get_engagement_trends(days)
+
+        # Get provider comparison
+        provider_comparison = analytics.get_provider_comparison_report(days)
+
+        # Get subscriber lifecycle
+        lifecycle = analytics.get_subscriber_lifecycle_analysis(days)
+
+        # Calculate summary metrics
+        daily_trends = trends.get('daily_trends', [])
+        if daily_trends:
+            avg_delivery_rate = sum(day.get('delivery_rate', 0) for day in daily_trends) / len(daily_trends)
+            avg_open_rate = sum(day.get('open_rate', 0) for day in daily_trends) / len(daily_trends)
+            avg_click_rate = sum(day.get('click_rate', 0) for day in daily_trends) / len(daily_trends)
+            avg_bounce_rate = sum(day.get('bounce_rate', 0) for day in daily_trends) / len(daily_trends)
+            total_sent = sum(day.get('sent', 0) for day in daily_trends)
+        else:
+            avg_delivery_rate = avg_open_rate = avg_click_rate = avg_bounce_rate = total_sent = 0
+
+        return {
+            "period_days": days,
+            "summary": {
+                "total_emails_sent": total_sent,
+                "average_delivery_rate": round(avg_delivery_rate, 2),
+                "average_open_rate": round(avg_open_rate, 2),
+                "average_click_rate": round(avg_click_rate, 2),
+                "average_bounce_rate": round(avg_bounce_rate, 2)
+            },
+            "trends": trends,
+            "provider_comparison": provider_comparison,
+            "subscriber_lifecycle": lifecycle
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")
+
+@app.get("/system/alerts")
+async def get_system_alerts(db=Depends(get_db_session)):
+    """Get system alerts and warnings"""
+    alerts = []
+    warnings = []
+
+    try:
+        # Check provider health
+        provider_manager = ProviderManager(db_session=db)
+        provider_stats = provider_manager.get_provider_stats()
+
+        for provider_name, stats in provider_stats.items():
+            if not stats.get('can_send', False):
+                alerts.append({
+                    "type": "provider_unavailable",
+                    "message": f"Provider {provider_name} is unavailable",
+                    "severity": "high",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+
+            if stats.get('reputation', 1.0) < 0.8:
+                warnings.append({
+                    "type": "low_reputation",
+                    "message": f"Provider {provider_name} has low reputation: {stats.get('reputation', 0):.2f}",
+                    "severity": "medium",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+
+        # Check recent performance
+        from ..utils.analytics import AnalyticsEngine
+        analytics = AnalyticsEngine(db)
+        trends = analytics.get_engagement_trends(1)
+
+        if trends.get('daily_trends'):
+            latest_day = trends['daily_trends'][-1] if trends['daily_trends'] else {}
+
+            if latest_day.get('delivery_rate', 100) < 90:
+                alerts.append({
+                    "type": "low_delivery_rate",
+                    "message": f"Low delivery rate: {latest_day.get('delivery_rate', 0):.1f}%",
+                    "severity": "high",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+
+            if latest_day.get('bounce_rate', 0) > 5:
+                alerts.append({
+                    "type": "high_bounce_rate",
+                    "message": f"High bounce rate: {latest_day.get('bounce_rate', 0):.1f}%",
+                    "severity": "high",
+                    "timestamp": datetime.utcnow().isoformat()
+                })
+
+        # Check warming status
+        warming_schedule = IPWarmingSchedule()
+        warming_status = warming_schedule.get_warming_status(db, 'sendgrid')
+
+        if warming_status.get('status') == 'paused':
+            alerts.append({
+                "type": "warming_paused",
+                "message": f"IP warming is paused: {warming_status.get('notes', 'Unknown reason')}",
+                "severity": "medium",
+                "timestamp": datetime.utcnow().isoformat()
+            })
+
+        return {
+            "alerts": alerts,
+            "warnings": warnings,
+            "alert_count": len(alerts),
+            "warning_count": len(warnings),
+            "last_checked": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        return {
+            "alerts": [{
+                "type": "system_error",
+                "message": f"Error checking system alerts: {str(e)}",
+                "severity": "high",
+                "timestamp": datetime.utcnow().isoformat()
+            }],
+            "warnings": [],
+            "alert_count": 1,
+            "warning_count": 0,
+            "last_checked": datetime.utcnow().isoformat()
+        }
 
 # Engagement Analytics
 @app.get("/analytics/trends")
