@@ -174,9 +174,69 @@ class InboxPlacementTester:
             html_part = MIMEText(content['html_content'], 'html')
             msg.attach(html_part)
         
-        # Send via SMTP (would use actual email engine in production)
-        # For now, simulate sending
-        print(f"📤 Simulating send to {to_email}")
+        # Send via SMTP using actual email delivery
+        try:
+            # Use the email engine to send the test email
+            # This integrates with the existing email delivery system
+            from ..core.email_engine import EmailDeliveryEngine
+
+            # Create a temporary campaign-like structure for the test
+            test_campaign = {
+                'id': 0,  # Test campaign ID
+                'subject': msg['Subject'],
+                'html_content': content.get('html_content', ''),
+                'text_content': content.get('text_content', ''),
+                'from_name': 'Inbox Placement Test',
+                'from_email': msg['From']
+            }
+
+            # Create temporary subscriber structure
+            test_subscriber = {
+                'id': 0,
+                'email': to_email,
+                'first_name': 'Test',
+                'last_name': 'User',
+                'status': 'active'
+            }
+
+            # Initialize email engine and send
+            engine = EmailDeliveryEngine(self.db)
+
+            # Send single email (simplified version of batch sending)
+            result = await engine._send_single_email(test_campaign, test_subscriber, 'test_esp')
+
+            if result.get('success'):
+                print(f"📤 Successfully sent test email to {to_email}")
+            else:
+                print(f"❌ Failed to send test email to {to_email}: {result.get('error', 'Unknown error')}")
+
+        except Exception as e:
+            print(f"❌ Error sending test email to {to_email}: {str(e)}")
+            # Fallback to basic SMTP if email engine fails
+            await self._send_via_basic_smtp(msg, to_email)
+
+    async def _send_via_basic_smtp(self, msg, to_email: str):
+        """Fallback method to send via basic SMTP"""
+        try:
+            # Basic SMTP configuration (should be moved to config)
+            smtp_server = "smtp.gmail.com"  # Or your SMTP server
+            smtp_port = 587
+            smtp_user = "your-smtp-user@gmail.com"  # Should be in config
+            smtp_password = "your-app-password"  # Should be in config
+
+            # Create SMTP connection
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+
+            # Send email
+            server.send_message(msg)
+            server.quit()
+
+            print(f"📤 Sent test email via basic SMTP to {to_email}")
+
+        except Exception as e:
+            print(f"❌ Basic SMTP send failed to {to_email}: {str(e)}")
     
     async def _check_all_placements(self, subject: str) -> List[PlacementResult]:
         """Check email placement for all seed accounts"""
@@ -189,60 +249,170 @@ class InboxPlacementTester:
         return [r for r in results if isinstance(r, PlacementResult)]
     
     async def _check_placement(self, seed: SeedAccount, subject: str) -> PlacementResult:
-        """Check where email landed for specific seed account"""
+        """Check where email landed for specific seed account using real IMAP"""
         try:
-            # For testing purposes, simulate placement results
-            # In production, this would connect to actual IMAP
-            import random
-            
-            # Simulate realistic placement based on provider
-            placement_probabilities = {
-                'gmail': {'inbox': 0.85, 'spam': 0.10, 'promotions': 0.05},
-                'outlook': {'inbox': 0.80, 'spam': 0.15, 'promotions': 0.05},
-                'yahoo': {'inbox': 0.75, 'spam': 0.20, 'promotions': 0.05},
-                'aol': {'inbox': 0.70, 'spam': 0.25, 'promotions': 0.05}
-            }
-            
-            probs = placement_probabilities.get(seed.provider, {'inbox': 0.75, 'spam': 0.20, 'promotions': 0.05})
-            
-            rand = random.random()
-            if rand < probs['inbox']:
-                folder = 'inbox'
-            elif rand < probs['inbox'] + probs['spam']:
-                folder = 'spam'
-            elif rand < probs['inbox'] + probs['spam'] + probs['promotions']:
-                folder = 'promotions'
-            else:
-                folder = 'not_found'
-            
-            # Simulate authentication results
-            auth_results = "spf=pass smtp.mailfrom=mail.cjsinsurancesolutions.com; dkim=pass header.d=cjsinsurancesolutions.com; dmarc=pass"
-            spam_score = random.uniform(0, 5) if folder == 'spam' else random.uniform(-2, 2)
-            
+            # Connect to IMAP server
+            imap = await self._connect_imap(seed)
+            if not imap:
+                return self._create_error_result(seed, "Failed to connect to IMAP")
+
+            # Search for the test email
+            folder_found, headers, auth_results, spam_score = await self._search_email_in_folders(
+                imap, seed, subject
+            )
+
+            # Close IMAP connection
+            try:
+                imap.logout()
+            except:
+                pass  # Ignore logout errors
+
             return PlacementResult(
                 seed_email=seed.email,
                 provider=seed.provider,
-                folder=folder,
-                headers={
-                    'subject': subject,
-                    'authentication_results': auth_results,
-                    'spam_score': str(spam_score)
-                },
+                folder=folder_found,
+                headers=headers,
                 timestamp=datetime.now(),
                 authentication_results=auth_results,
                 spam_score=spam_score
             )
-            
+
         except Exception as e:
             print(f"❌ Error checking {seed.email}: {str(e)}")
-            return PlacementResult(
-                seed_email=seed.email,
-                provider=seed.provider,
-                folder='error',
-                headers={'error': str(e)},
-                timestamp=datetime.now()
-            )
-    
+            return self._create_error_result(seed, str(e))
+
+    async def _connect_imap(self, seed: SeedAccount) -> imaplib.IMAP4_SSL:
+        """Connect to IMAP server for seed account"""
+        try:
+            # Create IMAP connection
+            imap = imaplib.IMAP4_SSL(seed.imap_server, seed.imap_port)
+
+            # Login
+            imap.login(seed.email, seed.password)
+
+            print(f"✅ Connected to IMAP for {seed.email}")
+            return imap
+
+        except Exception as e:
+            print(f"❌ IMAP connection failed for {seed.email}: {str(e)}")
+            return None
+
+    async def _search_email_in_folders(self, imap, seed: SeedAccount, subject: str) -> tuple:
+        """Search for test email in different folders"""
+        # Define folders to check based on provider
+        folders_to_check = self._get_folders_for_provider(seed.provider)
+
+        for folder_name, folder_type in folders_to_check:
+            try:
+                # Select folder
+                status, _ = imap.select(folder_name)
+                if status != 'OK':
+                    continue
+
+                # Search for emails with the test subject
+                search_criteria = f'SUBJECT "{subject}"'
+                status, messages = imap.search(None, search_criteria)
+
+                if status == 'OK' and messages[0]:
+                    # Found email in this folder
+                    message_ids = messages[0].split()
+                    if message_ids:
+                        # Get the most recent message
+                        latest_msg_id = message_ids[-1]
+
+                        # Fetch email headers
+                        status, msg_data = imap.fetch(latest_msg_id, '(RFC822.HEADER)')
+                        if status == 'OK':
+                            headers, auth_results, spam_score = self._parse_email_headers(msg_data[0][1])
+                            return folder_type, headers, auth_results, spam_score
+
+            except Exception as e:
+                print(f"⚠️ Error checking folder {folder_name}: {str(e)}")
+                continue
+
+        # Email not found in any folder
+        return 'not_found', {}, '', 0.0
+
+    def _get_folders_for_provider(self, provider: str) -> List[tuple]:
+        """Get list of folders to check for each provider"""
+        folder_mappings = {
+            'gmail': [
+                ('INBOX', 'inbox'),
+                ('[Gmail]/Spam', 'spam'),
+                ('[Gmail]/Promotions', 'promotions'),
+                ('[Gmail]/All Mail', 'inbox')  # Fallback
+            ],
+            'outlook': [
+                ('INBOX', 'inbox'),
+                ('Junk Email', 'spam'),
+                ('Deleted Items', 'spam')
+            ],
+            'yahoo': [
+                ('INBOX', 'inbox'),
+                ('Bulk Mail', 'spam'),
+                ('Spam', 'spam')
+            ],
+            'aol': [
+                ('INBOX', 'inbox'),
+                ('Spam', 'spam')
+            ]
+        }
+
+        return folder_mappings.get(provider, [('INBOX', 'inbox')])
+
+    def _parse_email_headers(self, raw_headers: bytes) -> tuple:
+        """Parse email headers to extract authentication results and spam score"""
+        try:
+            msg = email.message_from_bytes(raw_headers)
+
+            # Extract authentication results
+            auth_results = msg.get('Authentication-Results', '')
+
+            # Extract spam score (different headers for different providers)
+            spam_score = 0.0
+            spam_headers = [
+                'X-Spam-Score', 'X-Microsoft-Antispam-Mailbox-Delivery',
+                'X-Gmail-Spam-Score', 'X-Yahoo-Spam-Score'
+            ]
+
+            for header in spam_headers:
+                score_header = msg.get(header, '')
+                if score_header:
+                    # Try to extract numeric score
+                    import re
+                    score_match = re.search(r'[-+]?\d*\.?\d+', score_header)
+                    if score_match:
+                        spam_score = float(score_match.group())
+                        break
+
+            # Create headers dict
+            headers = {
+                'subject': msg.get('Subject', ''),
+                'from': msg.get('From', ''),
+                'to': msg.get('To', ''),
+                'date': msg.get('Date', ''),
+                'authentication_results': auth_results,
+                'spam_score': str(spam_score)
+            }
+
+            return headers, auth_results, spam_score
+
+        except Exception as e:
+            print(f"⚠️ Error parsing headers: {str(e)}")
+            return {}, '', 0.0
+
+    def _create_error_result(self, seed: SeedAccount, error_msg: str) -> PlacementResult:
+        """Create error result for failed placement check"""
+        return PlacementResult(
+            seed_email=seed.email,
+            provider=seed.provider,
+            folder='error',
+            headers={'error': error_msg},
+            timestamp=datetime.now(),
+            authentication_results='',
+            spam_score=0.0
+        )
+
     def get_placement_recommendations(self, results: Dict) -> List[str]:
         """Provide recommendations based on placement results"""
         recommendations = []

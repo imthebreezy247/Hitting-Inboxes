@@ -63,10 +63,21 @@ class CampaignUpdate(BaseModel):
     text_content: Optional[str] = None
     segment_rules: Optional[Dict[str, Any]] = None
 
-# Dependency to get async database session
+# Dependency to get async database session with proper lifecycle management
 async def get_async_db_session():
-    """Get async database session"""
-    return await get_async_db()
+    """Get async database session with proper transaction management"""
+    db = await get_async_db()
+    try:
+        yield db
+        # Note: AsyncDatabaseManager handles its own connection lifecycle
+        # No explicit commit needed as each operation auto-commits
+    except Exception as e:
+        logger.error(f"Database session error: {str(e)}")
+        # AsyncDatabaseManager handles rollback internally
+        raise
+    finally:
+        # Connection is returned to pool automatically by AsyncDatabaseManager
+        pass
 
 # Legacy sync database session (for backward compatibility)
 def get_db_session():
