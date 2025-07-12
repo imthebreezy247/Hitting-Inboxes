@@ -141,6 +141,26 @@ class AsyncDatabaseManager:
                     FOREIGN KEY (email_send_id) REFERENCES email_sends (id)
                 )
             ''')
+
+            # Delivery events table for webhook processing
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS delivery_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    timestamp TIMESTAMP NOT NULL,
+                    email TEXT NOT NULL,
+                    campaign_id INTEGER,
+                    esp_provider TEXT NOT NULL,
+                    details TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_message_id (message_id),
+                    INDEX idx_email (email),
+                    INDEX idx_event_type (event_type),
+                    INDEX idx_timestamp (timestamp),
+                    FOREIGN KEY (campaign_id) REFERENCES campaigns (id)
+                )
+            ''')
             
             # ESP provider stats table
             await conn.execute('''

@@ -17,6 +17,7 @@ from ..core.warming_system import IPWarmingSchedule
 from ..core.provider_manager import ProviderManager
 from ..core.error_handling import handle_error, ValidationError, EmailDeliveryError
 from ..core.rate_limiter import rate_limit_manager
+from .webhooks import webhook_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +29,9 @@ app = FastAPI(
     description="Advanced email delivery system with multi-ESP support, warming, and analytics",
     version="2.0.0"
 )
+
+# Include webhook router
+app.include_router(webhook_router)
 
 # Pydantic models for request/response
 class SubscriberCreate(BaseModel):
@@ -113,10 +117,29 @@ async def root():
                 <li><a href="/docs">API Documentation</a></li>
                 <li><a href="/health">Health Check</a></li>
                 <li><a href="/system/status">System Status</a></li>
+                <li><a href="/dashboard">📊 Real-Time Dashboard</a></li>
             </ul>
         </body>
     </html>
     """
+
+# Dashboard endpoint
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard():
+    """Real-time metrics dashboard"""
+    try:
+        with open("templates/dashboard.html", "r") as f:
+            return f.read()
+    except FileNotFoundError:
+        return """
+        <html>
+            <body>
+                <h1>Dashboard Not Found</h1>
+                <p>The dashboard template is missing. Please ensure templates/dashboard.html exists.</p>
+                <a href="/">← Back to Home</a>
+            </body>
+        </html>
+        """
 
 # System status endpoint
 @app.get("/system/status")
@@ -363,6 +386,93 @@ async def get_engagement_analytics(
         
     except Exception as e:
         error_info = handle_error(e, {"endpoint": "get_engagement_analytics"})
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+# Real-time Metrics Dashboard Endpoint
+@app.get("/api/realtime-metrics")
+async def get_realtime_metrics(
+    hours: int = 24,
+    db=Depends(get_async_db_session)
+):
+    """Get real-time performance metrics from actual delivery data"""
+    try:
+        # Real delivery rate from webhook events
+        delivery_query = """
+            SELECT
+                COUNT(CASE WHEN event_type = 'delivered' THEN 1 END) as delivered,
+                COUNT(CASE WHEN event_type IN ('sent', 'delivered', 'bounce') THEN 1 END) as total_sent,
+                COUNT(CASE WHEN event_type = 'bounce' THEN 1 END) as bounced,
+                COUNT(CASE WHEN event_type = 'open' THEN 1 END) as opened,
+                COUNT(CASE WHEN event_type = 'click' THEN 1 END) as clicked,
+                COUNT(CASE WHEN event_type = 'complaint' THEN 1 END) as complained
+            FROM delivery_events
+            WHERE timestamp > datetime('now', '-{} hours')
+        """.format(hours)
+
+        delivery_stats = await db.execute_query(delivery_query)
+
+        if delivery_stats and delivery_stats[0]['total_sent'] > 0:
+            stats = delivery_stats[0]
+            delivery_rate = (stats['delivered'] / stats['total_sent']) * 100
+            bounce_rate = (stats['bounced'] / stats['total_sent']) * 100
+            open_rate = (stats['opened'] / stats['delivered']) * 100 if stats['delivered'] > 0 else 0
+            click_rate = (stats['clicked'] / stats['delivered']) * 100 if stats['delivered'] > 0 else 0
+            complaint_rate = (stats['complained'] / stats['total_sent']) * 100
+        else:
+            delivery_rate = bounce_rate = open_rate = click_rate = complaint_rate = 0
+            stats = {'delivered': 0, 'total_sent': 0, 'bounced': 0, 'opened': 0, 'clicked': 0, 'complained': 0}
+
+        # ESP breakdown
+        esp_query = """
+            SELECT
+                esp_provider,
+                COUNT(CASE WHEN event_type = 'delivered' THEN 1 END) as delivered,
+                COUNT(CASE WHEN event_type IN ('sent', 'delivered', 'bounce') THEN 1 END) as sent,
+                COUNT(CASE WHEN event_type = 'bounce' THEN 1 END) as bounced
+            FROM delivery_events
+            WHERE timestamp > datetime('now', '-{} hours')
+            GROUP BY esp_provider
+        """.format(hours)
+
+        esp_stats = await db.execute_query(esp_query)
+        esp_breakdown = {}
+
+        for esp_stat in esp_stats:
+            provider = esp_stat['esp_provider']
+            sent = esp_stat['sent']
+            delivered = esp_stat['delivered']
+            bounced = esp_stat['bounced']
+
+            esp_breakdown[provider] = {
+                'sent': sent,
+                'delivered': delivered,
+                'bounced': bounced,
+                'delivery_rate': (delivered / sent * 100) if sent > 0 else 0,
+                'bounce_rate': (bounced / sent * 100) if sent > 0 else 0
+            }
+
+        return {
+            "real_metrics": {
+                "period_hours": hours,
+                "delivery_rate": round(delivery_rate, 2),
+                "bounce_rate": round(bounce_rate, 2),
+                "open_rate": round(open_rate, 2),
+                "click_rate": round(click_rate, 2),
+                "complaint_rate": round(complaint_rate, 2),
+                "total_sent": stats['total_sent'],
+                "total_delivered": stats['delivered'],
+                "total_bounced": stats['bounced'],
+                "total_opened": stats['opened'],
+                "total_clicked": stats['clicked'],
+                "total_complained": stats['complained'],
+                "esp_breakdown": esp_breakdown,
+                "last_updated": datetime.utcnow().isoformat(),
+                "data_source": "real_webhook_events"
+            }
+        }
+
+    except Exception as e:
+        error_info = handle_error(e, {"endpoint": "realtime_metrics"})
         raise HTTPException(status_code=500, detail="Internal server error")
 
 # ESP Management Endpoints
